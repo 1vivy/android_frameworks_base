@@ -5339,6 +5339,18 @@ public class PhoneWindowManager implements WindowManagerPolicy {
             return interceptKeyBeforeQueueing(event, policyFlags);
         }
 
+        // Specific device key handling.
+        //
+        // This has to precede handleKeyGesture(). A handler that consumes a key which is
+        // still mapped to a system keycode - the OnePlus Plus Key is scan code 735, which
+        // the device keylayout assigns ASSIST - would otherwise run its own action while
+        // the single-key gesture detector independently runs the native one, so a single
+        // physical press performs two actions. Events no handler consumes are untouched
+        // and reach the gesture detector exactly as before.
+        if (dispatchKeyToKeyHandlers(event)) {
+            return 0;
+        }
+
         // This could prevent some wrong state in multi-displays environment,
         // the default display may turned off but interactive is true.
         final boolean isDefaultDisplayOn = Display.isOnState(mDefaultDisplay.getState());
@@ -5361,11 +5373,6 @@ public class PhoneWindowManager implements WindowManagerPolicy {
                 && (!isNavBarVirtKey || mNavBarVirtualKeyHapticFeedbackEnabled ||
                         event.getDeviceId() > 0)
                 && event.getRepeatCount() == 0;
-
-        // Specific device key handling
-        if (dispatchKeyToKeyHandlers(event)) {
-            return 0;
-        }
 
         // Handle special keys.
         switch (keyCode) {
