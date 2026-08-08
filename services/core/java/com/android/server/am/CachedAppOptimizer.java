@@ -1694,7 +1694,17 @@ public class CachedAppOptimizer {
 
             if (valid == null) {
                 // Use JNI only once
-                valid = new Boolean(compactionFlagsValidForMemcg(getCompactionFlags(profile)));
+                try {
+                    valid = Boolean.valueOf(
+                            compactionFlagsValidForMemcg(getCompactionFlags(profile)));
+                } catch (RuntimeException e) {
+                    // On older kernels the memcg reclaim interface may not support
+                    // these flags; the native side throws IllegalArgumentException
+                    // instead of returning false. Treat that as "not valid for
+                    // memcg" and fall back to per-process compaction rather than
+                    // crashing system_server.
+                    valid = Boolean.FALSE;
+                }
                 mProfileValidForMemcgMap.put(profile, valid);
             }
 
@@ -1868,6 +1878,9 @@ public class CachedAppOptimizer {
                     break;
                 }
                 case COMPACT_SYSTEM_MSG: {
+                    if (!profileValidForMemcg(CompactProfile.FULL)) {
+                        break;
+                    }
                     Trace.traceBegin(Trace.TRACE_TAG_ACTIVITY_MANAGER, "compactSystem");
                     long memFreedBefore = getMemoryFreedCompaction();
                     compactSystem();

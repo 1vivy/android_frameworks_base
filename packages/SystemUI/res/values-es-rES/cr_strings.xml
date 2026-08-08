@@ -53,7 +53,7 @@
     <string name="music_controls_no_title">Sin título</string>
     <string name="smartspace_content_desc">De un vistazo</string>
     <string name="smartspace_flight_qr_code">Código QR</string>
-    <string name="smartspace_role_desc">Ver</string>
+    <string name="smartspace_role_desc">Vista</string>
     <!-- Button to restart SystemUI, within the Restart Options dialog -->
     <string name="global_action_restart_systemui">Interfaz del Sistema</string>
     <!-- On The Go -->
@@ -64,11 +64,16 @@
     <string name="onthego_notif_error">No es posible iniciar el modo On-The-Go</string>
     <string name="onthego_notif_restart">Reiniciar On-The-Go</string>
     <string name="onthego_notif_camera_changed">Modo de cámara cambiado</string>
-    <string name="onthego_transparency">Transparencia</string>
-    <string name="onthego_front_camera">Usar la cámara frontal</string>
     <string name="onthego_service_toggle">Reiniciar el servicio automáticamente</string>
     <string name="onthego_channel_name">Principal</string>
     <string name="global_action_onthego">On-The-Go</string>
+    <string name="onthego_dialog_title">On-The-Go</string>
+    <string name="onthego_opacity_title">Opacidad de la cámara</string>
+    <string name="onthego_opacity_default">50 %</string>
+    <string name="onthego_restart_title">Reiniciar al cambiar la cámara</string>
+    <string name="onthego_restart_summary">Reinicia momentáneamente la vista previa al cambiar de cámara</string>
+    <string name="onthego_front_camera_title">Cámara frontal</string>
+    <string name="onthego_front_camera_summary">Usar la cámara frontal en lugar de la trasera</string>
     <!-- Data usage info in QS footer -->
     <string name="usage_data">usado hoy</string>
     <string name="usage_data_weekly">usado esta semana</string>
@@ -189,7 +194,7 @@
     <string name="ax_dynamic_bar_paused">En pausa</string>
     <string name="ax_dynamic_bar_saved">Guardado</string>
     <string name="ax_dynamic_bar_recording">Grabando</string>
-    <string name="ax_dynamic_bar_done">Hecho</string>
+    <string name="ax_dynamic_bar_done">Listo</string>
     <string name="ax_dynamic_bar_ringing">Sonando</string>
     <string name="ax_dynamic_bar_running">En ejecución</string>
     <string name="ax_dynamic_bar_on">ACTIVADO</string>
