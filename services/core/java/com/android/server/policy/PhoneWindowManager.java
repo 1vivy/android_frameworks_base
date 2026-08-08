@@ -5339,6 +5339,11 @@ public class PhoneWindowManager implements WindowManagerPolicy {
             return interceptKeyBeforeQueueing(event, policyFlags);
         }
 
+        // Specific device key handling
+        if (dispatchKeyToKeyHandlers(event)) {
+            return 0;
+        }
+
         // This could prevent some wrong state in multi-displays environment,
         // the default display may turned off but interactive is true.
         final boolean isDefaultDisplayOn = Display.isOnState(mDefaultDisplay.getState());
@@ -5361,11 +5366,6 @@ public class PhoneWindowManager implements WindowManagerPolicy {
                 && (!isNavBarVirtKey || mNavBarVirtualKeyHapticFeedbackEnabled ||
                         event.getDeviceId() > 0)
                 && event.getRepeatCount() == 0;
-
-        // Specific device key handling
-        if (dispatchKeyToKeyHandlers(event)) {
-            return 0;
-        }
 
         // Handle special keys.
         switch (keyCode) {
