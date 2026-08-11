@@ -19,6 +19,7 @@ package com.android.server;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.doNothing;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.verify;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -35,7 +36,9 @@ import android.app.ActivityManager;
 import android.app.ActivityManagerInternal;
 import android.app.AppOpsManager;
 import android.content.Context;
+import android.content.Intent;
 import android.hardware.health.HealthInfo;
+import android.os.BatteryManager;
 import android.os.HandlerThread;
 import android.os.SystemClock;
 import android.os.SystemProperties;
@@ -60,9 +63,14 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
+import java.io.FileDescriptor;
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.lang.reflect.Method;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
@@ -81,6 +89,8 @@ public class BatteryServiceTest {
     private static final int UPDATED_CHARGE_COUNTER = 4218000;
     private static final int CURRENT_MAX_CHARGING_CURRENT = 298125;
     private static final int UPDATED_MAX_CHARGING_CURRENT = 398125;
+    private static final int CURRENT_FULL_CHARGE = 6900000;
+    private static final int CURRENT_DESIGN_CAPACITY = 7300000;
     private static final int HANDLER_IDLE_TIME_MS = 5000;
     @Rule
     public final ExtendedMockitoRule mExtendedMockitoRule = new ExtendedMockitoRule.Builder(this)
@@ -139,6 +149,37 @@ public class BatteryServiceTest {
     @Test
     public void createBatteryService_withNullLooper_throwsNullPointerException() {
         assertThrows(NullPointerException.class, () -> new BatteryService(mContextMock));
+    }
+
+    @Test
+    public void dumpIncludesBatteryLifetimeTelemetry() throws Exception {
+        StringWriter output = new StringWriter();
+        Method dumpInternal = BatteryService.class.getDeclaredMethod("dumpInternal",
+                FileDescriptor.class, PrintWriter.class, String[].class);
+        dumpInternal.setAccessible(true);
+
+        dumpInternal.invoke(mBatteryService, new FileDescriptor(), new PrintWriter(output),
+                new String[0]);
+
+        assertTrue(output.toString().contains("Cycle count: 50"));
+        assertTrue(output.toString().contains("Maximum capacity: " + CURRENT_FULL_CHARGE));
+        assertTrue(output.toString().contains("Design capacity: " + CURRENT_DESIGN_CAPACITY));
+    }
+
+    @Test
+    public void batteryChangedBroadcastIncludesBatteryLifetimeTelemetry() {
+        ArgumentCaptor<Intent> intentCaptor = ArgumentCaptor.forClass(Intent.class);
+
+        verify(() -> ActivityManager.broadcastStickyIntent(intentCaptor.capture(),
+                eq(new String[]{mSystemUiPackage}), eq(AppOpsManager.OP_NONE),
+                eq(BatteryService.BATTERY_CHANGED_OPTIONS), eq(UserHandle.USER_ALL)));
+
+        Intent intent = intentCaptor.getValue();
+        assertEquals(50, intent.getIntExtra(BatteryManager.EXTRA_CYCLE_COUNT, -1));
+        assertEquals(CURRENT_FULL_CHARGE,
+                intent.getIntExtra(BatteryManager.EXTRA_MAXIMUM_CAPACITY, -1));
+        assertEquals(CURRENT_DESIGN_CAPACITY,
+                intent.getIntExtra(BatteryManager.EXTRA_DESIGN_CAPACITY, -1));
     }
 
     @Test
@@ -344,6 +385,8 @@ public class BatteryServiceTest {
         h.batteryCurrentMicroamps = 298125;
         h.maxChargingVoltageMicrovolts = 3000;
         h.batteryCycleCount = 50;
+        h.batteryFullChargeUah = CURRENT_FULL_CHARGE;
+        h.batteryFullChargeDesignCapacityUah = CURRENT_DESIGN_CAPACITY;
         h.chargingState = 4;
         h.batteryCapacityLevel = 100;
         return h;
