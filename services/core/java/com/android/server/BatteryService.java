@@ -1744,6 +1744,7 @@ public final class BatteryService extends SystemService {
                 pw.println("  Charging state: " + mHealthInfo.chargingState);
                 pw.println("  Charging policy: " + mHealthInfo.chargingPolicy);
                 pw.println("  Capacity level: " + mHealthInfo.batteryCapacityLevel);
+                pw.println("  Cycle count: " + mHealthInfo.batteryCycleCount);
                 pw.println("  Maximum capacity: " + mHealthInfo.batteryFullChargeUah);
                 pw.println("  Design capacity: " + mHealthInfo.batteryFullChargeDesignCapacityUah);
             } else {
