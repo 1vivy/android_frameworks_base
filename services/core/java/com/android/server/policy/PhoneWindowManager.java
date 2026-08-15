@@ -2921,7 +2921,8 @@ public class PhoneWindowManager implements WindowManagerPolicy {
         mButtonOverridePermissionChecker = injector.getButtonOverridePermissionChecker();
         mSideFpsEventHandler = new SideFpsEventHandler(mContext, mHandler, mPowerManager);
 
-        mDeviceKeyHandlers.add(new InfinitiPlusKey(mContext, mHandler));
+        mDeviceKeyHandlers.add(new InfinitiPlusKey(
+                mContext, mHandler, () -> mCurrentUserId, this::keyguardOn));
         final String[] deviceKeyHandlerLibs = res.getStringArray(
                 org.lineageos.platform.internal.R.array.config_deviceKeyHandlerLibs);
         final String[] deviceKeyHandlerClasses = res.getStringArray(
