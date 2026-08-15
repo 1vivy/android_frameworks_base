@@ -24,11 +24,13 @@ import static com.android.systemui.doze.DozeMachine.State.DOZE_AOD_PAUSED;
 import static com.android.systemui.doze.DozeMachine.State.DOZE_AOD_PAUSING;
 import static com.android.systemui.doze.DozeMachine.State.DOZE_PULSE_DONE;
 
+import android.content.Context;
 import android.hardware.biometrics.BiometricAuthenticator;
 import android.os.Handler;
 import android.util.Log;
 import android.view.Display;
 
+import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import com.android.systemui.biometrics.AuthController;
@@ -38,17 +40,18 @@ import com.android.systemui.doze.dagger.DozeScope;
 import com.android.systemui.doze.dagger.WrappedService;
 import com.android.systemui.keyguard.domain.interactor.DozeInteractor;
 import com.android.systemui.scene.shared.flag.SceneContainerFlag;
+import com.android.systemui.settings.UserTracker;
 import com.android.systemui.statusbar.phone.DozeParameters;
 import com.android.systemui.user.domain.interactor.SelectedUserInteractor;
 import com.android.systemui.util.wakelock.SettableWakeLock;
 import com.android.systemui.util.wakelock.WakeLock;
 
+import java.util.concurrent.Executor;
+
 import javax.inject.Inject;
 import javax.inject.Provider;
 
-/**
- * Controls the screen when dozing.
- */
+/** Controls the screen when dozing. */
 @DozeScope
 public class DozeScreenState implements DozeMachine.Part {
 
@@ -56,20 +59,21 @@ public class DozeScreenState implements DozeMachine.Part {
     private static final String TAG = "DozeScreenState";
 
     /**
-     * Delay entering low power mode when animating to make sure that we'll have
-     * time to move all elements into their final positions while still at 60 fps.
+     * Delay entering low power mode when animating to make sure that we'll have time to move all
+     * elements into their final positions while still at 60 fps.
      */
     private static final int ENTER_DOZE_DELAY = 4000;
+
     /**
-     * Hide wallpaper earlier when entering low power mode. The gap between
-     * hiding the wallpaper and changing the display mode is necessary to hide
-     * the black frame that's inherent to hardware specs.
+     * Hide wallpaper earlier when entering low power mode. The gap between hiding the wallpaper and
+     * changing the display mode is necessary to hide the black frame that's inherent to hardware
+     * specs.
      */
     public static final int ENTER_DOZE_HIDE_WALLPAPER_DELAY = 2500;
 
     /**
-     * Add an extra delay to the transition to DOZE when udfps is current activated before
-     * the display state transitions from ON => DOZE.
+     * Add an extra delay to the transition to DOZE when udfps is current activated before the
+     * display state transitions from ON => DOZE.
      */
     public static final int UDFPS_DISPLAY_STATE_DELAY = 1200;
 
@@ -85,6 +89,15 @@ public class DozeScreenState implements DozeMachine.Part {
     private final DozeScreenBrightness mDozeScreenBrightness;
     private final SelectedUserInteractor mSelectedUserInteractor;
     private final DozeInteractor mDozeInteractor;
+    private final AodPanelStateController mAodPanelStateController;
+    private final UserTracker mUserTracker;
+    final UserTracker.Callback mUserChangedCallback =
+            new UserTracker.Callback() {
+                @Override
+                public void onUserChanged(int newUser, @NonNull Context userContext) {
+                    mAodPanelStateController.onUserChanged();
+                }
+            };
 
     private int mPendingScreenState = Display.STATE_UNKNOWN;
     private SettableWakeLock mWakeLock;
@@ -101,7 +114,11 @@ public class DozeScreenState implements DozeMachine.Part {
             DozeLog dozeLog,
             DozeScreenBrightness dozeScreenBrightness,
             DozeInteractor dozeInteractor,
-            SelectedUserInteractor selectedUserInteractor) {
+            SelectedUserInteractor selectedUserInteractor,
+            AodPanelStateController aodPanelStateController,
+            AodPanelStateServiceSink aodPanelStateServiceSink,
+            UserTracker userTracker,
+            @Main Executor mainExecutor) {
         mDozeService = service;
         mHandler = handler;
         mParameters = parameters;
@@ -113,6 +130,10 @@ public class DozeScreenState implements DozeMachine.Part {
         mDozeScreenBrightness = dozeScreenBrightness;
         mSelectedUserInteractor = selectedUserInteractor;
         mDozeInteractor = dozeInteractor;
+        mAodPanelStateController = aodPanelStateController;
+        aodPanelStateServiceSink.attachController(aodPanelStateController);
+        mUserTracker = userTracker;
+        mUserTracker.addCallback(mUserChangedCallback, mainExecutor);
 
         updateUdfpsController();
         if (mUdfpsController == null) {
@@ -131,10 +152,12 @@ public class DozeScreenState implements DozeMachine.Part {
     @Override
     public void destroy() {
         mAuthController.removeCallback(mAuthControllerCallback);
+        mUserTracker.removeCallback(mUserChangedCallback);
     }
 
     @Override
     public void transitionTo(DozeMachine.State oldState, DozeMachine.State newState) {
+        mAodPanelStateController.setAodActive(newState.isAlwaysOn());
         int screenState = newState.screenState(mParameters);
         mDozeHost.cancelGentleSleep();
 
@@ -155,10 +178,11 @@ public class DozeScreenState implements DozeMachine.Part {
 
         final boolean messagePending = mHandler.hasCallbacks(mApplyPendingScreenState);
         final boolean pulseEnding = oldState == DOZE_PULSE_DONE && newState.isAlwaysOn();
-        final boolean turningOn = (oldState == DOZE_AOD_PAUSED || oldState == DOZE)
-                && newState.isAlwaysOn();
-        final boolean turningOff = (oldState.isAlwaysOn() && newState == DOZE)
-                || (oldState == DOZE_AOD_PAUSING && newState == DOZE_AOD_PAUSED);
+        final boolean turningOn =
+                (oldState == DOZE_AOD_PAUSED || oldState == DOZE) && newState.isAlwaysOn();
+        final boolean turningOff =
+                (oldState.isAlwaysOn() && newState == DOZE)
+                        || (oldState == DOZE_AOD_PAUSING && newState == DOZE_AOD_PAUSED);
         final boolean justInitialized = oldState == DozeMachine.State.INITIALIZED;
         if (messagePending || justInitialized || pulseEnding || turningOn) {
             // During initialization, we hide the navigation bar. That is however only applied after
@@ -168,17 +192,25 @@ public class DozeScreenState implements DozeMachine.Part {
             mPendingScreenState = screenState;
 
             // Delay screen state transitions even longer while animations are running.
-            boolean shouldDelayTransitionEnteringDoze = newState == DOZE_AOD
-                    && mParameters.shouldDelayDisplayDozeTransition() && !turningOn;
+            boolean shouldDelayTransitionEnteringDoze =
+                    newState == DOZE_AOD
+                            && mParameters.shouldDelayDisplayDozeTransition()
+                            && !turningOn;
 
             // Delay screen state transition longer if UDFPS is actively authenticating a fp
-            boolean shouldDelayTransitionForUDFPS = newState == DOZE_AOD
-                    && mUdfpsController != null && mUdfpsController.isFingerDown();
+            boolean shouldDelayTransitionForUDFPS =
+                    newState == DOZE_AOD
+                            && mUdfpsController != null
+                            && mUdfpsController.isFingerDown();
 
             if (!messagePending) {
                 if (DEBUG) {
-                    Log.d(TAG, "Display state changed to " + screenState + " delayed by "
-                            + (shouldDelayTransitionEnteringDoze ? ENTER_DOZE_DELAY : 1));
+                    Log.d(
+                            TAG,
+                            "Display state changed to "
+                                    + screenState
+                                    + " delayed by "
+                                    + (shouldDelayTransitionEnteringDoze ? ENTER_DOZE_DELAY : 1));
                 }
 
                 if (shouldDelayTransitionEnteringDoze) {
@@ -246,19 +278,21 @@ public class DozeScreenState implements DozeMachine.Part {
         }
     }
 
-    private final AuthController.Callback mAuthControllerCallback = new AuthController.Callback() {
-        @Override
-        public void onAllAuthenticatorsRegistered(@BiometricAuthenticator.Modality int modality) {
-            if (modality == TYPE_FINGERPRINT) {
-                updateUdfpsController();
-            }
-        }
+    private final AuthController.Callback mAuthControllerCallback =
+            new AuthController.Callback() {
+                @Override
+                public void onAllAuthenticatorsRegistered(
+                        @BiometricAuthenticator.Modality int modality) {
+                    if (modality == TYPE_FINGERPRINT) {
+                        updateUdfpsController();
+                    }
+                }
 
-        @Override
-        public void onEnrollmentsChanged(@BiometricAuthenticator.Modality int modality) {
-            if (modality == TYPE_FINGERPRINT) {
-                updateUdfpsController();
-            }
-        }
-    };
+                @Override
+                public void onEnrollmentsChanged(@BiometricAuthenticator.Modality int modality) {
+                    if (modality == TYPE_FINGERPRINT) {
+                        updateUdfpsController();
+                    }
+                }
+            };
 }

@@ -34,8 +34,8 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.verify;
@@ -53,6 +53,7 @@ import com.android.systemui.biometrics.UdfpsController;
 import com.android.systemui.flags.DisableSceneContainer;
 import com.android.systemui.flags.EnableSceneContainer;
 import com.android.systemui.keyguard.domain.interactor.DozeInteractor;
+import com.android.systemui.settings.UserTracker;
 import com.android.systemui.statusbar.phone.DozeParameters;
 import com.android.systemui.user.domain.interactor.SelectedUserInteractor;
 import com.android.systemui.util.wakelock.WakeLockFake;
@@ -65,6 +66,9 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import javax.inject.Provider;
 
 @RunWith(AndroidJUnit4.class)
@@ -73,26 +77,20 @@ public class DozeScreenStateTest extends SysuiTestCase {
 
     private DozeServiceFake mServiceFake;
     private FakeHandler mHandlerFake;
-    @Mock
-    private DozeHost mDozeHost;
-    @Mock
-    private DozeParameters mDozeParameters;
+    @Mock private DozeHost mDozeHost;
+    @Mock private DozeParameters mDozeParameters;
     private WakeLockFake mWakeLock;
     private DozeScreenState mScreen;
-    @Mock
-    private Provider<UdfpsController> mUdfpsControllerProvider;
-    @Mock
-    private AuthController mAuthController;
-    @Mock
-    private UdfpsController mUdfpsController;
-    @Mock
-    private DozeLog mDozeLog;
-    @Mock
-    private DozeScreenBrightness mDozeScreenBrightness;
-    @Mock
-    private DozeInteractor mDozeInteractor;
-    @Mock
-    private SelectedUserInteractor mSelectedUserInteractor;
+    @Mock private Provider<UdfpsController> mUdfpsControllerProvider;
+    @Mock private AuthController mAuthController;
+    @Mock private UdfpsController mUdfpsController;
+    @Mock private DozeLog mDozeLog;
+    @Mock private DozeScreenBrightness mDozeScreenBrightness;
+    @Mock private DozeInteractor mDozeInteractor;
+    @Mock private SelectedUserInteractor mSelectedUserInteractor;
+    @Mock private AodPanelStateServiceSink mAodPanelStateServiceSink;
+    @Mock private UserTracker mUserTracker;
+    private FakeAodPanelStateSink mAodPanelStateSink;
 
     @Before
     public void setUp() throws Exception {
@@ -106,9 +104,24 @@ public class DozeScreenStateTest extends SysuiTestCase {
         mServiceFake = new DozeServiceFake();
         mHandlerFake = new FakeHandler(Looper.getMainLooper());
         mWakeLock = new WakeLockFake();
-        mScreen = new DozeScreenState(mServiceFake, mHandlerFake, mDozeHost, mDozeParameters,
-                mWakeLock, mAuthController, mUdfpsControllerProvider, mDozeLog,
-                mDozeScreenBrightness, mDozeInteractor, mSelectedUserInteractor);
+        mAodPanelStateSink = new FakeAodPanelStateSink();
+        mScreen =
+                new DozeScreenState(
+                        mServiceFake,
+                        mHandlerFake,
+                        mDozeHost,
+                        mDozeParameters,
+                        mWakeLock,
+                        mAuthController,
+                        mUdfpsControllerProvider,
+                        mDozeLog,
+                        mDozeScreenBrightness,
+                        mDozeInteractor,
+                        mSelectedUserInteractor,
+                        new AodPanelStateController(mAodPanelStateSink),
+                        mAodPanelStateServiceSink,
+                        mUserTracker,
+                        Runnable::run);
     }
 
     @Test
@@ -125,6 +138,27 @@ public class DozeScreenStateTest extends SysuiTestCase {
         mScreen.transitionTo(INITIALIZED, DOZE_AOD);
 
         assertEquals(Display.STATE_DOZE_SUSPEND, mServiceFake.screenState);
+    }
+
+    @Test
+    public void testAodPanelEdgesFollowAlwaysOnLifecycle() {
+        mScreen.transitionTo(UNINITIALIZED, INITIALIZED);
+        mScreen.transitionTo(INITIALIZED, DOZE_AOD);
+        mScreen.transitionTo(DOZE_AOD, DOZE_AOD);
+        mScreen.transitionTo(DOZE_AOD, DOZE);
+        mScreen.transitionTo(DOZE, FINISH);
+
+        assertEquals(List.of("1:ENTER", "1:EXIT"), mAodPanelStateSink.attempts);
+    }
+
+    @Test
+    public void testUserChangeClosesAndReplaysActiveAodGeneration() {
+        mScreen.transitionTo(UNINITIALIZED, INITIALIZED);
+        mScreen.transitionTo(INITIALIZED, DOZE_AOD);
+
+        mScreen.mUserChangedCallback.onUserChanged(10, mContext);
+
+        assertEquals(List.of("1:ENTER", "1:EXIT", "2:ENTER"), mAodPanelStateSink.attempts);
     }
 
     @Test
@@ -336,5 +370,16 @@ public class DozeScreenStateTest extends SysuiTestCase {
         mScreen.destroy();
 
         verify(mAuthController).removeCallback(any());
+        verify(mUserTracker).removeCallback(mScreen.mUserChangedCallback);
+    }
+
+    private static final class FakeAodPanelStateSink implements AodPanelStateController.Sink {
+        final List<String> attempts = new ArrayList<>();
+
+        @Override
+        public boolean send(long generation, AodPanelStateController.Edge edge) {
+            attempts.add(generation + ":" + edge);
+            return true;
+        }
     }
 }
