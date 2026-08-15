@@ -16,40 +16,82 @@
 package com.android.server.wm;
 
 import android.content.Context;
-import android.os.BatteryManager;
+import android.database.ContentObserver;
+import android.os.Binder;
+import android.os.Handler;
+import android.os.IBinder;
 import android.os.SystemProperties;
 import android.os.UserHandle;
 import android.provider.Settings;
 import android.util.Slog;
 
-import lineageos.health.HealthInterface;
-
 import com.android.internal.app.IGameSpaceCallback;
 
+import lineageos.health.HealthInterface;
+
 import java.util.List;
+import java.util.Objects;
+import java.util.function.Supplier;
 
 class GameStateDispatcher {
 
     private static final String TAG = "GameStateDispatcher";
     private static final String KEY_GAMING_MODE_ACTIVE = "ax_gaming_mode_active";
-    private static final String KEY_BYPASS_CHARGE_ENABLED = "bypass_charge_enabled";
+    private static final String KEY_CHARGE_HOLD_ENABLED = "charge_hold_enabled";
     private static final String KEY_POWER_MODE_PERF = "persist.sys.power_mode_perf";
     private static final String KEY_POWER_MODE_PERF_BY_USER = "persist.sys.power_mode_perf_by_user";
 
     private final Context mContext;
     private final List<IGameSpaceCallback> mCallbacks;
+    private final ChargeHoldSession mChargeHoldSession;
 
-    private int mChargeControlLimit = 100;
-    private boolean mWasChargingControlEnabled = false;
+    private boolean mGameActive;
 
     GameStateDispatcher(Context context, List<IGameSpaceCallback> callbacks) {
         mContext = context;
         mCallbacks = callbacks;
+        HealthInterface health = HealthInterface.getInstance(context);
+        mChargeHoldSession =
+                new ChargeHoldSession(
+                        new ChargeHoldPolicy() {
+                            @Override
+                            public boolean acquire(IBinder token, boolean active) {
+                                return health.acquireChargeHoldSession(token, active);
+                            }
+
+                            @Override
+                            public boolean update(IBinder token, boolean active) {
+                                return health.updateChargeHoldSession(token, active);
+                            }
+
+                            @Override
+                            public boolean release(IBinder token) {
+                                return health.releaseChargeHoldSession(token);
+                            }
+                        },
+                        Binder::new);
+
+        ContentObserver chargeHoldObserver =
+                new ContentObserver(new Handler(context.getMainLooper())) {
+                    @Override
+                    public void onChange(boolean selfChange) {
+                        updateChargeHoldSession();
+                    }
+                };
+        context.getContentResolver()
+                .registerContentObserver(
+                        Settings.System.getUriFor(KEY_CHARGE_HOLD_ENABLED),
+                        false,
+                        chargeHoldObserver,
+                        UserHandle.USER_ALL);
     }
 
     void dispatchGameState(boolean active, String packageName) {
-        Settings.Secure.putIntForUser(mContext.getContentResolver(),
-                KEY_GAMING_MODE_ACTIVE, active ? 1 : 0, UserHandle.USER_CURRENT);
+        Settings.Secure.putIntForUser(
+                mContext.getContentResolver(),
+                KEY_GAMING_MODE_ACTIVE,
+                active ? 1 : 0,
+                UserHandle.USER_CURRENT);
 
         for (IGameSpaceCallback callback : mCallbacks) {
             try {
@@ -64,82 +106,89 @@ class GameStateDispatcher {
             }
         }
 
-        if (active) {
-            if (bypassChargeEnabled()) {
-                mChargeControlLimit = getChargingLimit();
-                setBypassActive(true);
-                setSmartChargeLvl(battLevel());
-            }
-        } else {
-            if (bypassChargeEnabled()) {
-                setBypassActive(false);
-                setSmartChargeLvl(mChargeControlLimit);
+        synchronized (this) {
+            mGameActive = active;
+            if (active) {
+                if (!mChargeHoldSession.update(chargeHoldEnabled())) {
+                    Slog.w(TAG, "Unable to acquire game charge-hold session");
+                }
+            } else {
+                mChargeHoldSession.finish();
             }
         }
     }
 
     void boostGame(boolean enable) {
-        int perfByUser = Settings.System.getIntForUser(
-                mContext.getContentResolver(), KEY_POWER_MODE_PERF_BY_USER, 0,
-                UserHandle.USER_CURRENT);
+        int perfByUser =
+                Settings.System.getIntForUser(
+                        mContext.getContentResolver(),
+                        KEY_POWER_MODE_PERF_BY_USER,
+                        0,
+                        UserHandle.USER_CURRENT);
         if (perfByUser == 1) return;
 
-        Settings.System.putIntForUser(mContext.getContentResolver(),
-                KEY_POWER_MODE_PERF, enable ? 1 : 0,
+        Settings.System.putIntForUser(
+                mContext.getContentResolver(),
+                KEY_POWER_MODE_PERF,
+                enable ? 1 : 0,
                 UserHandle.USER_CURRENT);
         SystemProperties.set(KEY_POWER_MODE_PERF, enable ? "1" : "0");
     }
 
-    void setBypassCharge(boolean enable) {
-        if (!bypassChargeEnabled()) return;
+    private synchronized void updateChargeHoldSession() {
+        if (mGameActive && !mChargeHoldSession.update(chargeHoldEnabled())) {
+            Slog.w(TAG, "Unable to update game charge-hold session");
+        }
+    }
 
-        if (enable) {
-            mChargeControlLimit = getChargingLimit();
+    private boolean chargeHoldEnabled() {
+        return Settings.System.getIntForUser(
+                        mContext.getContentResolver(),
+                        KEY_CHARGE_HOLD_ENABLED,
+                        0,
+                        UserHandle.USER_CURRENT)
+                == 1;
+    }
+
+    interface ChargeHoldPolicy {
+        boolean acquire(IBinder token, boolean active);
+
+        boolean update(IBinder token, boolean active);
+
+        boolean release(IBinder token);
+    }
+
+    static final class ChargeHoldSession {
+        private final ChargeHoldPolicy mPolicy;
+        private final Supplier<IBinder> mTokenFactory;
+
+        private IBinder mToken;
+        private boolean mAcquired;
+
+        ChargeHoldSession(ChargeHoldPolicy policy, Supplier<IBinder> tokenFactory) {
+            mPolicy = Objects.requireNonNull(policy);
+            mTokenFactory = Objects.requireNonNull(tokenFactory);
         }
 
-        setBypassActive(enable);
-        setSmartChargeLvl(enable ? battLevel() : mChargeControlLimit);
-    }
-
-    private boolean bypassChargeEnabled() {
-        return Settings.System.getIntForUser(mContext.getContentResolver(),
-                KEY_BYPASS_CHARGE_ENABLED, 0, UserHandle.USER_CURRENT) == 1;
-    }
-
-    private int getChargingLimit() {
-        try {
-            HealthInterface health = HealthInterface.getInstance(mContext);
-            mWasChargingControlEnabled = health.getEnabled();
-            if (mWasChargingControlEnabled) {
-                return health.getLimit();
+        synchronized boolean update(boolean active) {
+            if (mToken == null) {
+                mToken = Objects.requireNonNull(mTokenFactory.get());
             }
-        } catch (Exception e) {
-            Slog.w(TAG, "Failed to get charging limit", e);
+            if (!mAcquired) {
+                mAcquired = mPolicy.acquire(mToken, active);
+            } else if (!mPolicy.update(mToken, active)) {
+                mAcquired = mPolicy.acquire(mToken, active);
+            }
+            return mAcquired;
         }
-        return 100;
-    }
 
-    private int battLevel() {
-        BatteryManager bm = mContext.getSystemService(BatteryManager.class);
-        return bm != null ? bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) : -1;
-    }
-
-    private void setSmartChargeLvl(int value) {
-        try {
-            HealthInterface health = HealthInterface.getInstance(mContext);
-            health.setMode(HealthInterface.MODE_LIMIT);
-            health.setLimit(value);
-        } catch (Exception e) {
-            Slog.w(TAG, "Failed to set charging limit", e);
-        }
-    }
-
-    private void setBypassActive(boolean value) {
-        try {
-            HealthInterface health = HealthInterface.getInstance(mContext);
-            health.setEnabled(value || mWasChargingControlEnabled);
-        } catch (Exception e) {
-            Slog.w(TAG, "Failed to set charging bypass", e);
+        synchronized void finish() {
+            if (mToken == null) {
+                return;
+            }
+            mPolicy.release(mToken);
+            mToken = null;
+            mAcquired = false;
         }
     }
 }
